@@ -1,10 +1,10 @@
 # Getting Started
 
-以开发一个“MD5计算器”程序为例，它使用了一个非常流行的C++的网络库[Poco](https://pocoproject.org/)。
+以开发一个“MD5计算器”程序为例，它依赖了一个非常流行的C++的网络库[Poco](https://pocoproject.org/)来帮助它完成功能。
 
 这个例子使用CMake作为构建工具，也可以使用别的构建工具。
 
-这个例子的源码在github上，所以你可以直接把代码clone下来，不用自己手动敲代码。
+这个例子的源码在github上，所以你也可以直接把代码clone下来，不用自己手动敲代码。
 
 ```sh
 $ git clone https://github.com/conan-io/examples.git && cd examples/libraries/poco/md5
