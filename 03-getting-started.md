@@ -1,4 +1,4 @@
-# Getting Started
+# 快速开始
 
 以开发一个“MD5计算器”程序为例，它依赖了一个非常流行的C++的网络库[Poco](https://pocoproject.org/)来帮助它完成功能。
 
