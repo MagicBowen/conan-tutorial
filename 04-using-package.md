@@ -281,9 +281,116 @@ $ conan install .. -pr=../poco_clang_3.5 -pr=my_build_tool1 -pr=my_build_tool2
 
 ## 工作流
 
+本节总结了用户使用conan与其它工具结合安装和消费已存在的包的一般工作流程。如论是处理单配置项目，还是多配置项目，都推荐你在项目根目录中使用conanfile（.py或.txt）来配置项目。
+
 ### 单配置
+
+当你的工程使用单一配置时，conanfile如我们前面示例中的那样，会相对比较简单。在前面的例子中，通过`conan install ..`在build目录下产生了conaninfo.txt以及conanbuildinfo.cmake文件用于支持项目构建。注意build目录是一个临时目录，不需要对其进行版本管理。
+
+独立于源码外的build目录（Out-of-source builds）也是支持的。如下例子：
+
+```sh
+$ git clone git@github.com:conan-io/examples
+$ cd libraries/poco
+$ conan install ./md5 --install-folder=md5_build
+```
+
+这将产生如下的目录结构：
+
+```
+md5_build
+    conaninfo.txt
+    conanbuildinfo.txt
+    conanbuildinfo.cmake
+md5
+    CMakeLists.txt  # If using cmake, but can be Makefile, sln...
+    README.md
+    conanfile.txt
+    md5.cpp
+```
+
+现在你可以如下构建：
+
+```sh
+$ cd md5_build
+$ cmake ../md5 -G "Visual Studio 15 Win64"  # or other generator
+$ cmake --build . --config Release
+$ ./bin/md5
+> c3fcd3d76192e4007dfb496cca67e13b
+```
+
+通过上面的方式我们创建了一个和工程源码分离的build目录，这样的好处是我们可以容易的对各种配置进行试验，我们清空某一个build不会影响到别的build目录。例如我们可以增加一个Debug类型的build目录：
+
+```sh
+$ rm -rf *
+$ conan install ../md5 -s build_type=Debug
+$ cmake ../md5 -G "Visual Studio 15 Win64"
+$ cmake --build . --config Debug
+$ ./bin/md5
+> c3fcd3d76192e4007dfb496cca67e13b
+```
 
 ### 多配置
 
+你可以在源码内或者源码外管理多个不同的配置，并且可以在它们之间切换而不用每次重新调用`conan install`。当然如果已经执行过`conan install`，然后在本机其它项目中使用相同的配置，再次执行`conan install`将会非常快，因为相关的包已经被安装在本地缓存中了（而不是某个项目内部）。
+
+```sh
+$ git clone git@github.com:conan-io/examples
+$ cd libraries/poco
+$ conan install md5 -s build_type=Debug -if md5_build_debug
+$ conan install md5 -s build_type=Release -if md5_build_release
+
+$ cd md5_build_debug && cmake ../md5 -G "Visual Studio 15 Win64" && cd ../..
+$ cd md5_build_release && cmake ../md5 -G "Visual Studio 15 Win64" && cd ../..
+```
+
+注意，上面的例子中`--install-folder`被缩写为`-if`。
+
+现在，项目目录将会如下：
+
+```
+md5_build_debug
+    conaninfo.txt
+    conanbuildinfo.txt
+    conanbuildinfo.cmake
+    CMakeCache.txt # and other cmake files
+md5_build_release
+    conaninfo.txt
+    conanbuildinfo.txt
+    conanbuildinfo.cmake
+    CMakeCache.txt # and other cmake files
+example-poco-timer
+    CMakeLists.txt  # If using cmake, but can be Makefile, sln...
+    README.md
+    conanfile.txt
+    md5.cpp
+```
+
+现在你可以选择到任何一个配置目录下执行构建，因为conan将具体不同的配置文件生成在不同的目录下。
+
+```sh
+$ cd md5_build_debug && cmake --build . --config Debug && cd ../..
+$ cd md5_build_release && cmake --build . --config Release && cd ../..
+```
+
+注意这里需要修改例子中代码中的CMake文件的`include()`，加上cmake二进制的目录宏，否则cmake构建的时候将找不到对应的conanbuildinfo.cmake文件。
+
+```cmake
+include(${CMAKE_BINARY_DIR}/conanbuildinfo.cmake)
+conan_basic_setup()
+```
+
 ## 调试包
+
+要能够调试一个包的源码，调试器需要能找到源码以及可供调试的信息（Visual Studio中的pdb文件，对于MAC和Unix系统，位于库本身中）。
+
+一般情况下，Conan的包中没有包含调试信息文件；就算包含，每个用户的本地的缓存路径也可能不同。而且一般包都是由CI（持续集成）服务器自动构建的，供调试的信息的路径一般也和开发者机器上的不一样。
+
+这里一个做法是在开发者的机器上直接编译一个可供调试的包，在Conan下这很简单：
+
+```sh
+conan install <reference> --build <name> --profile <debug_profile>
+```
+
+这个命令将会触发库的构建发生在开发者的机器上，因此二进制指向的源码目录就是确定的，调试器将能够根据调试信息找到源码。
 
