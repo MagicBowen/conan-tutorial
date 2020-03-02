@@ -940,13 +940,210 @@ def package_id(self):
 
 ## Inspecting Packages
 
-## Packaging Approaches
+可以使用`conan get`查看本地缓存中的包，或者是已经上传的包。
+
+- 列出本地包里的文件：
+
+```sh
+$ conan get zlib/1.2.11@ .
+
+Listing directory '.':
+ conandata.yml
+ conanfile.py
+ conanmanifest.txt
+```
+
+- 打印二进制包的conaninfo.txt文件：
+
+```sh
+$ conan get zlib/1.2.11@:2144f833c251030c3cfd61c4354ae0e38607a909
+```
+
+- 打印远端仓库中的包的conanfile.py文件：
+
+```sh
+$ conan get zlib/1.2.11@ -r conan-center
+```
+
+```python
+import os
+import stat
+from conans import ConanFile, tools, CMake, AutoToolsBuildEnvironment
+from conans.errors import ConanException
+
+
+class ZlibConan(ConanFile):
+    name = "zlib"
+    version = "1.2.11"
+    url = "https://github.com/conan-io/conan-center-index"
+    homepage = "https://zlib.net"
+
+    #...
+```
+
+更多关于`conan get`的用法看[这里](https://docs.conan.io/en/latest/reference/commands/consumer/get.html#conan-get)。
+
+## 打包方法
+
+包配置文件里面有三个方法用来控制包的二进制兼容性以及实现不同的打包方法：`package_id()`, `build_id()`以及`package_info()`。这些函数可以让包的创建者为每个库选择合适的打包方法。
 
 ### 1 config (1 build) -> 1 package
 
+一个典型的打包方式是一个配置对应一个包含工件的包。这种方式下，为debug模式下与构建的库将于release模式下预构建的库处于不同的包中。
+
+因此，如果根据一个包配置构建出`hello`的库，那么将会有一个包含`hello.lib`的release版本的包，以及一个debug版本的包含`hello.lib`的包。
+
+![](./images/conan-single_conf_packages.png)
+
+使用这种方式，`package_info()`方法允许你为用户设置不同的信息，让用户指导包中的库的名字、必须的条件编译以及编译参数。
+
+```python
+class HelloConan(ConanFile):
+
+    settings = "os", "compiler", "build_type", "arch"
+
+    def package_info(self):
+        self.cpp_info.libs = ["mylib"]
+```
+
+这里很关键的一步是记得要在settings中声明`build_type`，这意味着不同的`build_type`值将会产生不同的包。
+
+包中声明的和构建相关的值都会被传递到为目标构建系统生成的文件中。例如为cmake生成的conanbuildinfo.cmake中会包含以下变量：
+
+```cmake
+set(CONAN_LIBS_MYPKG mylib)
+# ...
+set(CONAN_LIBS mylib ${CONAN_LIBS})
+```
+
+这些变量被使用在`conan_basic_setup()`宏中，被设值到对应的cmake变量中。
+
+如果用户想要在不同的配置中切换，需要如下命令：
+
+```sh
+$ conan install -s build_type=Release ...
+# when need to debug
+$ conan install -s build_type=Debug ...
+```
+
+`1 config (1 build) -> 1 package`的方法有很多优点：它容易实现和维护；生成的包的大小是最小的，因此省磁盘以及传输快；不同的包解耦有助于定位问题。但是要注意不要将不同的包分发错误。
+
 ### N configs -> 1 package
+
+你可能希望将debug和release的发布物打包在一个包中，以便可以使用IDE，直接在IDE中切换debug/release版本而不用使用命令行切换包。这种类型的包中包含了不同配置的不同交付物，可以把release和debug版本的库放在一个包里面。
+
+![](./images/conan-multi_conf_packages.png)
+
+Github上有该类型的一个完整样例：[https://github.com/conan-io/examples](https://github.com/conan-io/examples)，具体在“features/multi_config”目录下。进入这个目录执行`conan create . user/channel`就可以创建对应的包。
+
+创建一个同时包含debug/release的包并不复杂。
+
+首先在包配置的settings中移除`build_type`属性。这样为debug和release将会构建同样的package ID的包。
+
+```python
+class HelloConan(ConanFile):
+    # build_type has been omitted. It is not an input setting.
+    settings = "os", "compiler", "arch"
+    generators = "cmake"
+
+    # Remove runtime and use always default (MD/MDd)
+    def configure(self):
+        if self.settings.compiler == "Visual Studio":
+            del self.settings.compiler.runtime
+
+    def build(self):
+        cmake_release = CMake(self, build_type="Debug")
+        cmake_release.configure()
+        cmake_release.build()
+
+        cmake_debug = CMake(self, build_type="Release")
+        cmake_debug.configure()
+        cmake_debug.build()
+```
+
+上例中的`configure()`函数中对`compiler.runtime subsetting`的特殊操作是针对Visual Studio的，删除掉Visual Studio中的差异化运行时（`MD`\`MDd`）。
+
+本例中，按照CMake的语法，二进制需要有不同的后缀，所以我们需要在`package_info`函数中将其标记给用户。
+
+```python
+def package_info(self):
+    self.cpp_info.release.libs = ["mylibrary"]
+    self.cpp_info.debug.libs = ["mylibrary_d"]
+```
+
+这些信息将会传递到CMake的变量中：
+
+```cmake
+set(CONAN_LIBS_MYPKG_DEBUG mylibrary_d)
+set(CONAN_LIBS_MYPKG_RELEASE mylibrary)
+# ...
+set(CONAN_LIBS_DEBUG mylibrary_d ${CONAN_LIBS_DEBUG})
+set(CONAN_LIBS_RELEASE mylibrary ${CONAN_LIBS_RELEASE})
+```
+
+这些变量会被CMake的`conan_basic_setup()`宏中被正确的赋值。
+
+虽然包中同时有debug和release的构建产物，但是任然有很多共享的配置。例如头文件的include目录，这将会产生共享的CMake变量供消费者使用。
 
 ### N configs (1 build) -> N packages
 
+Conan支持通过一个构建脚本为不同的配置构建不同的二进制。例如debug/release，或者不同的架构(32/64bit)，或者库类型(shared/static)。如果每个变化都执行一次构建，那么将会浪费很多构建时间和资源。可以优化构建逻辑，使用一次构建产生不同的包。
 
-## Package Creator Tools
+![](./images/conan-build_once.png)
+
+这可以通过在包的配置文件中定义一个`build_id()`函数来搞定。
+
+```python
+settings = "os", "compiler", "arch", "build_type"
+
+def build_id(self):
+    self.info_build.settings.build_type = "Any"
+
+def package(self):
+    if self.settings.build_type == "Debug":
+        #package debug artifacts
+    else:
+        # package release
+```
+
+在`build_id()`函数中使用了`self.info.build`对象来改变构建的哈希ID。通过设置`build_type="Any"`，我们强制无论是debug还是release版本的构建，都将产生同一个build的哈希ID。
+
+影响构建目录多少的不止有这一个属性，还有其它配置也会影响到构建目录的个数（体系架构Architecture，编译器版本 compiler version等）。但是通过自定义`build_id()`函数，合并这些选项可以减少构建目录数，节省构建时间。更多信息可以参考[`build_id()`的详细介绍](https://docs.conan.io/en/latest/reference/conanfile/methods.html#method-build-id)。
+
+## 包创建工具
+
+使用Python脚本（或者shell命令以及bash脚本），可以使我们自动化的为不同的配置执行打包和测试流程。例如你可以将如下脚本放在包的根目录下，将其命名为build.py。
+
+```python
+import os, sys
+import platform
+
+def system(command):
+    retcode = os.system(command)
+    if retcode != 0:
+        raise Exception("Error while executing:\n\t %s" % command)
+
+if __name__ == "__main__":
+    params = " ".join(sys.argv[1:])
+
+    if platform.system() == "Windows":
+        system('conan create . demo/testing -s compiler="Visual Studio" -s compiler.version=14 %s' % params)
+        system('conan create . demo/testing -s compiler="Visual Studio" -s compiler.version=12 %s' % params)
+        system('conan create . demo/testing -s compiler="gcc" -s compiler.version=4.8 %s' % params)
+    else:
+        pass
+```
+
+运行这个脚本：`python build.py`，就会自动根据当前平台创建不同配置的包。
+
+Conan官方开发了一个FOSS的工具[Conan Package Tools](https://github.com/conan-io/conan-package-tools)，用于帮助我们从一个包配置文件构建多个不同的二进制包。它提供了简单的方式来定义配置并调用`conan test`。另外它提供了和CI（Travis CI, Appveyor and Bamboo,）集成的工具，以及基于云环境自动创建、测试和上传二进制包。
+
+这个工具可以让我们简单的通过`git push`在云上创建成千上百的二进制包。具体如下：
+
+- 轻易的根据不同的配置产生不同的conan包；
+- 启动的在Travis/Appveyor服务器通过CI Job执行分布式的构建；
+- 基于Docker容器，自动的在Travis-CI上为Linux上的gcc和clang的多个版本构建包；
+- 自动的在Travis-CI上通过app-clang为OSX系统创建包；
+- 支持Visual Studio，根据检测到的环境自动进行命令行的环境配置；
+
+可以通过pip安装它：`$ pip install conan_package_tools`。更多能力请阅读[github](https://github.com/conan-io/conan-package-tools)中的README.md。
