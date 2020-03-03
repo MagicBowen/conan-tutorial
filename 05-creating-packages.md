@@ -1146,4 +1146,4 @@ Conan官方开发了一个FOSS的工具[Conan Package Tools](https://github.com/
 - 自动的在Travis-CI上通过app-clang为OSX系统创建包；
 - 支持Visual Studio，根据检测到的环境自动进行命令行的环境配置；
 
-可以通过pip安装它：`$ pip install conan_package_tools`。更多能力请阅读[github](https://github.com/conan-io/conan-package-tools)中的README.md。
+可以通过pip安装它：`$ pip install conan_package_tools`。更多介绍请阅读[github](https://github.com/conan-io/conan-package-tools)中的README.md。
