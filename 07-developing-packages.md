@@ -174,18 +174,165 @@ Hello/1.1@user/channel: Calling build()
 $ conan create . user/channel --keep-build`
 ```
 
-## Packages in editable mode
+## 可编辑模式(editable mode)的包
 
-### Put a package in editable mode
+注意：这是个实验特性，未来发布的版本可能会发生不兼容的修改。
 
-### Editable packages layouts
+当在有多个内在功能互相关联的大型项目中工作时，建议不要将工程组织成一个大的单体项目。推荐将项目分解成多个库，每个库专门完成一组内聚的任务，甚至分配给专门的开发团队维护。这种方式有助于隔离和重用代码，缩短编译时间，并减少include了错误头文件的可能性。
 
-### Using a package in editable mode
+然而，在某些情况下，同时工作在多个库上，能够及时看到一个修改后对其它的影响，这点也是很有用的。我们前面介绍的工作流：`conan source`,`conan install`, `conan build`, `conan package`, 以及`conan export-pkg`，会将包构建后发布到本地缓存，为使用者做好准备。
 
-### Revert the editable mode
+但是，使用可编辑模式包，你能够告诉Conan从本地工作目录下查找包的头文件以及构建产物，而无需将包导出。
 
+我们用一个例子来看看这个特性。假设开发者创建了一个`CoolApp`的应用，紧密依赖了一个`cpp/version@user/dev`的库。包`cpp/version@user/dev`已经可以工作了，开发者在本地目录下开发了代码，他们随时可以构建并执行`conan create . cool/version@user/dev`来创建这个包。同时，`CoolApp`里面有一个conanfile.txt(或者conanfile.py)，描述了它依赖于`cpp/version@user/dev`。当构建这个程序的时候，它将从Conan的本地缓存中查找依赖的`cool`包。
 
-## Workspaces
+### 将包设置为可编辑模式
+
+避免每次修改`cpp/version@user/dev`都需要在Conan缓存中创建包，我们可以将包设置为可修改模式：通过创建一个从Conan缓存到本地工作目录的引用连接。
+
+```sh
+$ conan editable add <path/to/local/dev/libcool> cool/version@user/dev
+# you could do "cd <path/to/local/dev/libcool> && conan editable add . cool/version@user/dev"
+```
+
+执行上述命令后，本地的包或者项目每次使用`cpp/version@user/dev`，都将会重镜像到`<path/to/local/dev/libcool>`目录下，不会再从Conan缓存中去获取。
+
+Conan的包配置文件通过`package_info()`函数定义了包的布局（layout）。如果不做修改，默认的布局如下述代码所示：
+
+```python
+def package_info(self):
+    # default behavior, doesn't need to be explicitly defined in recipes
+    self.cpp_info.includedirs = ["include"]
+    self.cpp_info.libdirs = ["lib"]
+    self.cpp_info.bindirs = ["bin"]
+    self.cpp_info.resdirs = ["res"]
+```
+
+这意味着conan将会使用路径`path/to/local/dev/libcool/include`查找`cool`的头文件，通过`path/to/local/dev/libcool/lib`查找对应的库文件。
+
+但是，实际情况是，大部分包在开发过程中经常做增量构建，构建目录的布局和包最终发布的布局不会完全一样。当然每次增量构建后可以执行`conan package`进行打包，使得布局满足包布局要求，但是这样不够优雅。Conan提供了几种为可编辑模式下的包自定义包布局的方式。
+
+### 可编辑模式的包布局
+
+可编辑模式的包的布局有几种不同的自定义方式：
+
+- 通过包配置文件定义
+
+通过包配置文件中的`package_info()`函数进行定义：
+
+```python
+from conans import ConanFile
+
+class Pkg(ConanFile):
+    settings = "build_type"
+    def package_info(self):
+        if not self.in_local_cache:
+            d = "include_%s" % self.settings.build_type
+            self.cpp_info.includedirs = [d.lower()]
+```
+
+上述代码通过构建类型来配置头文件的目录布局。如果`build_type=Debug`，则include目录是`path/to/local/dev/libcool/include_debug`，否则是`path/to/local/dev/libcool/include_release`。同样，其它的目录（libdirs，bindirs等）都可以如此自定义。
+
+- 通过布局文件（layout files）配置
+
+除了通过包配置文件自定义布局，还可以使用独立的布局文件。这对于有很多的库共享相同的布局的时候很有用。
+
+布局文件是一些ini文件，但是Conan做了扩展，可以使用[Jinja2](https://palletsprojects.com/p/jinja/)模板引擎。在配置文件里面使用`settings`、`options`以及当前的`reference`对象，可以为布局配置文件增加逻辑：
+
+```ini
+[includedirs]
+src/core/include
+src/cmp_a/include
+
+[libdirs]
+build/{{settings.build_type}}/{{settings.arch}}
+
+[bindirs]
+{% if options.shared %}
+build/{{settings.build_type}}/shared
+{% else %}
+build/{{settings.build_type}}/static
+{% endif %}
+
+[resdirs]
+{% for item in ["cmp1", "cmp2", "cmp3"] %}
+src/{{ item }}/resouces/{% if item != "cmp3" %}{{ settings.arch }}{% endif %}
+{% endfor %}
+```
+
+Jinja的语法可以查看它的[官方文档](https://palletsprojects.com/p/jinja/)。
+
+布局描述文件也可以对指定的包做配置，下面例子中设置`cool`包的include目录为`src/core/include`，而其它的则是`src/include`。
+
+```ini
+[includedirs]
+src/include
+
+[cool/version@user/dev:includedirs]
+src/core/include
+```
+
+可编辑模式下的包的客赔目录有`includedirs`, `libdirs`, `bindirs`, `resdirs`, 以及`builddirs`。所有这些都在包描述文件的`cpp_info`的字典字段中，而该字典中其它值都是不能修改的，例如`cflags`、`defines`等。
+
+默认所有的路径都是相对于conanfile.py的相对路径，也可以用绝对路径。
+
+为包指定布局文件使用`conan editable add`命令，例如：
+
+```sh
+$ conan editable add . cool/version@user/dev --layout=win_layout
+```
+
+`win_layout`文件首先会在当前文件夹下查找，所以可将将其和源码放到一起，一起发布和被共享使用。如果在当前目录下没有找到，则会在本地缓存`~/.conan/layouts`目录下查找。可以定义布局文件共享给团队，然后通过`conan config install`进行安装。
+
+如果`conan editable add`命令没有参数，将会默认使用`~/.conan/layouts/default`文件中描述的布局。
+
+对于布局，Conan会按照以下优先级选择：
+
+- 首先会执行包配置文件中的`package_info()`函数。这会定义各种标记参数（例如`cflags`）、definitions（例如`-D`的宏参数）以及布局目录: `includedirs`, `libdirs`等等；
+
+- 如果布局文件存在，或者显示的应用了默认的`.conan/layouts/default`文件，Conan将会查找对应的匹配布局文件；
+
+- 如果找到匹配的布局文件，则会使用布局文件中的定义替换(includedirs, libdirs, resdirs, builddirs, bindirs)；
+
+- 布局文件的匹配，按照从特殊到一般的顺序 （布局文件可以为指定的包指定特殊的目录布局）；
+
+- 如果没有匹配的，则仍旧使用原来定义在`package_info()`中的目录结构；
+
+- 如果在`conan editable add`之后，手动增加了`.conan/layouts/default`文件，它将不会被使用；
+
+### 使用可编辑模式的包
+
+一旦对一个包建立了可编辑模式的引用，它就会对整个系统生效：所有本机（使用相同的conan缓存）的对其有依赖的工程或者包，都会重镜像到可编辑模式包的真实工作目录。
+
+一个可编辑模式的包，对它的用户来说是透明的。使用可编辑模式的包的工作流如下：
+
+- 通过`git/svn clone ... && cd folder`获得`cool/version@user/dev`的源码；
+
+- 将包设置为可编辑模式：`conan editable add . cool/version@user/dev --layout=mylayout`;
+
+- 现在可以正常编码和构建。注意你本地工作目录下的'cool'包的目录结构布局要和前面命令中的`mylayout`文件制定的一样；
+
+- 对于消费`cool`的工程`CoolApp`，和以前一样，使用`conan install`并执行构建；
+
+- 回到`cool/version@user/dev`的源码目录，修改代码并构建，这里不需要执行任何Conan命令以及打包；
+
+- 回到`CoolApp`目录，重新构建它，测试`cool`的修改对其的影响；
+
+可以看到，可以同时开发`cool`和`CoolApp`，不用反复打包发包。
+
+注意：当一个包处于可编辑模式，大多数的工作也不会工作。可编辑模式的包不能使用`conan upload`, `conan export`或者`conan create`命令。
+
+### 取消包的可编辑模式
+
+取消包的可编辑模式，使用如下命令：
+
+```sh
+$ conan editable remove cool/version@user/dev
+```
+
+当执行上述命令后，所有对包的消费将会重新需要从本地包缓存中获取。
+
+## 工作区（Workspaces）
 
 ### Conan workspace definition
 
