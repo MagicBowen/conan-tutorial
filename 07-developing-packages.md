@@ -171,7 +171,7 @@ Hello/1.1@user/channel: Calling build()
 如果你看到构建成功执行了，则可以使用`--keep-build`来跳过`build()`函数的执行。
 
 ```sh
-$ conan create . user/channel --keep-build
+$ conan create . user/channel --keep-build`
 ```
 
 ## Packages in editable mode
