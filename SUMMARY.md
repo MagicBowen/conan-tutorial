@@ -8,7 +8,7 @@
 * [创建包](05-creating-packages.md)
 * [上传包](06-uploading-packages.md)
 * [开发包](07-developing-packages.md)
-* [包工具集](08-package-apps-and-devtools.md)
+* [打包应用与开发工具](08-package-apps-and-devtools.md)
 * [版本管理](09-versioning.md)
 * [Conan进阶](10-master-conan.md)
 * [系统及交叉编译](11-systems-and-cross-building.md)
