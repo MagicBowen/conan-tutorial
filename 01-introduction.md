@@ -20,7 +20,7 @@ Conan的服务端主要负责包的存储，并不构建和产生包。包产生
 
 - Conan Client：Conan的客户端。它是一个基于命令行的程序，支持包的创建和使用。Conan客户端有一个包的本地缓存，因此你可以完全离线的创建和测试和使用本地的包。
 
-- JFrog Artifactory Community Edition (CE)：[JFrog Artifactory Community Edition (CE)](https://conan.io/downloads.html)是官方推荐的用于私有部署的Conan服务器程序。这个是JFrog Artifactory的免费社区版，包含了WebUI、LDAP协议、拓扑管理、REST API以及能够存储构建物的通用仓库。
+- JFrog Artifactory Community Edition (CE)：[JFrog Artifactory Community Edition (CE)](https://conan.io/downloads.html)是官方推荐的用于私有部署的Conan服务器程序。这个是JFrog Artifactory的免费社区版，包含了WebUI、LDAP协议、拓扑管理、REST API以及能够存储构建物的通用仓库。下载Docker Image：`docker pull docker.bintray.io/jfrog/artifactory-cpp-ce`，运行方式参见[文档](https://www.jfrog.com/confluence/display/RTF5X/Installing+with+Docker)。
 
 - Conan Server：这是一个与Conan Client一起发布的小的服务端程序。它是一个Conan服务端的开源实现，只包含服务端的基本功能，没有WebUI以及其它高级功能。
 
