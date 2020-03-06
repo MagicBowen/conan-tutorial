@@ -542,13 +542,116 @@ class MyPkg(ConanFile):
             self.build_requires("ToolWin/0.1@user/stable")
 ```
 
+上面ToolA和ToolB将会在构建这个包的时候获取，而ToolWin则只会在Windows上使用。
 
+如果`build_requirements()`和`build_requires`中定义了相同的包名，则`build_requirements()`优先。
 
+根据规则，如果profile中定义了编译期依赖，包配置文件中的定义的编译期依赖如果具有相同的包名，则会覆盖profile中的。
 
-### Properties of build requirements
+### 构建时依赖的特点
 
-### Testing libraries
+无论构建时依赖定义在`build_requires`中还是定义在profile中，它们都具有相同的特性：
 
-### Common python code
+- 构建时依赖，在使用它们的包从源码开始构建的时候，并且和定义的pattern相匹配的时候，构建时依赖的包才会被获取；否则都不会检查这些构建时依赖的包是否存在；
 
+- 通过Profile或者通过命令行传入的Options以及环境变量都会影响到包的构建时依赖的选择。例如你可以通过profile或者命令行指定需要安装cmake/3.16.3版本；
 
+- 如果构建时依赖包满足匹配，则`deps_cpp_info`和`deps_env_info`的成员将会被激活。`deps_cpp_info`的成员有include目录、library名称、编译参数（CFLAGS、CXXFLAGS，LINKFLAGS）、sysroot等，将会从构建时依赖包的`self.cpp_info`的值中应用；而`deps_env_info`的成员，如PATH、PYTHONPATH等将作为环境变量被激活；
+
+- 构建时依赖同样会被传递。每个依赖可以继续声明自己的依赖，包括普通依赖和构建时依赖。构建时依赖的冲突解决和依赖覆写规则和普通依赖是一样的；
+
+- Conan一样会为匹配的构建时依赖创建依赖图谱，并将其缓存下来。构建时依赖被安装后缓存在Conan的本地缓存区；
+
+- 构建时依赖不影响包二进制的package ID。如果使用一个不同的构建时依赖产生出一个不同的二进制，你应当考虑增加options或者settings以反映出构建时依赖对二进制兼容性的影响；
+
+- `conan info`不会列出构建时依赖的包；
+
+### 测试框架库
+
+一个使用构建时依赖的例子就是测试框架。测试框架往往被实现为库，我们下面的例子中假设有一个叫做`mytest_framework`的测试框架库，并且已经存在其对应的Conan包。
+
+下面的例子中，在包配置文件中使用逻辑判断检查构建时依赖是否存在：
+
+```python
+def build(self):
+    cmake = CMake(self)
+    enable_testing = "mytest_framework" in self.deps_cpp_info.deps
+    cmake.configure(defs={"ENABLE_TESTING": enable_testing})
+    cmake.build()
+    if enable_testing:
+        cmake.test()
+```
+
+同时，包的CMakeLists.txt如下：
+
+```cmake
+project(PackageTest CXX)
+cmake_minimum_required(VERSION 2.8.12)
+
+include(${CMAKE_BINARY_DIR}/conanbuildinfo.cmake)
+conan_basic_setup()
+if(ENABLE_TESTING)
+    add_executable(example test.cpp)
+    target_link_libraries(example ${CONAN_LIBS})
+
+    enable_testing()
+    add_test(NAME example
+              WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+              COMMAND example)
+endif()
+```
+
+此时我们执行`conan install`，包的配置文件并不会获取`mytest_framework`也不会构建测试。
+
+但是如果定义如下的profile （例如mytest_profile）：
+
+```ini
+ [build_requires]
+ mytest_framework/0.1@user/channel
+```
+
+然后调用下面的命令，将会获取`mytest_framework`，并且构建并运行测试。
+
+```sh
+$ conan install . --profile=mytest_profile
+```
+
+### 共用的python代码
+
+构建时依赖也可以用来注入或者重用包配置文件中的python代码。
+
+如下Conan包用来封装和重用mypythontool.py文件：
+
+```python
+import os
+from conans import ConanFile
+
+class Tool(ConanFile):
+    name = "PythonTool"
+    version = "0.1"
+    exports_sources = "mypythontool.py"
+
+    def package(self):
+        self.copy("mypythontool.py")
+
+    def package_info(self):
+        self.env_info.PYTHONPATH.append(self.package_folder)
+```
+
+然后，如果在profile中定义了构建时依赖：
+
+```python
+[build_requires]
+PythonTool/0.1@user/channel
+```
+
+这样包里封装的Python代码就能被其它包配置文件复用：
+
+```python
+def build(self):
+    self.run("mytool")
+    import mypythontool
+    self.output.info(mypythontool.hello_world())
+```
+
+注意：这种重用python代码的方式，将会被Conan新提供的`python_requires`的方式替代，具体请参考[Python Requires的文档](https://docs.conan.io/en/latest/extending/python_requires.html#python-requires)。
