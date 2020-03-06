@@ -336,13 +336,214 @@ Linux内核经常会提供新的系统调用，如果应用程序或者第三方
 
 所以建议尽量使用glibc，或者根据linux内核的版本为定义Conan定义新的settings和子settings，然后用其保证二进制兼容性。
 
-## Creating conan packages to install dev tools
-### Using the tool packages in other recipes
+## 创建Conan包，用于安装开发工具
 
-### Using the tool packages in your system
+Conan 1.0引入了两个新的settings，`os_build`以及`arch_build`。这两个配置表示运行Conan的机器（而非表示包的目标机器的`os`和`arch`），这样就使得我们可以打包一些构建阶段使用的工具，例如编译器或者构建系统等。
 
-## Build requirements
-### Declaring build requirements
+如下示例一个打包汇编编译工具`nasm`的包配置：
+
+```python
+import os
+from conans import ConanFile
+from conans.client import tools
+
+
+class NasmConan(ConanFile):
+    name = "nasm"
+    version = "2.13.01"
+    license = "BSD-2-Clause"
+    url = "https://github.com/conan-community/conan-nasm-installer"
+    settings = "os_build", "arch_build"
+    build_policy = "missing"
+    description="Nasm for windows. Useful as a build_require."
+
+    def configure(self):
+        if self.settings.os_build != "Windows":
+            raise Exception("Only windows supported for nasm")
+
+    @property
+    def nasm_folder_name(self):
+        return "nasm-%s" % self.version
+
+    def build(self):
+        suffix = "win32" if self.settings.arch_build == "x86" else "win64"
+        nasm_zip_name = "%s-%s.zip" % (self.nasm_folder_name, suffix)
+        tools.download("http://www.nasm.us/pub/nasm/releasebuilds/"
+                       "%s/%s/%s" % (self.version, suffix, nasm_zip_name), nasm_zip_name)
+        self.output.warn("Downloading nasm: "
+                         "http://www.nasm.us/pub/nasm/releasebuilds"
+                         "/%s/%s/%s" % (self.version, suffix, nasm_zip_name))
+        tools.unzip(nasm_zip_name)
+        os.unlink(nasm_zip_name)
+
+    def package(self):
+        self.copy("*", dst="", keep_path=True)
+        self.copy("license*", dst="", src=self.nasm_folder_name, keep_path=False, ignore_case=True)
+
+    def package_info(self):
+        self.output.info("Using %s version" % self.nasm_folder_name)
+        self.env_info.path.append(os.path.join(self.package_folder, self.nasm_folder_name))
+```
+
+上面的包配置中有几个值得注意的点：
+
+- `configure()`函数只支持Windows，其它的配置将抛出异常；
+- `build()`函数下载对应的文件以及unzip它；
+- `package()`函数将所有解压的文件拷贝到包目录下；
+- `package_info()`函数使用`self.env_info`将包的bin目录加入到系统的环境变量path中；
+
+这个包有两个不同于一般Conan包的地方：
+
+- 没有`source()`函数。这是因为当你编译一个库，需要从源码执行构建。而在本例中，我们直接下载二进制程序，build函数仅仅完成下载以及解压，并不需要源码。当然，如果你需要从源码构建工具，你也可以像之前那样创建包配置；
+
+- `package_info()`函数使用了`self.env_info`对象。使用`self.env_info`对象，包可以在依赖这个构建工具的包执行`build()`、`package()`和`imports()`之前先自动的声明环境变量。这样工具的消费者就可以方便的使用工具，而不用自己先得去设置好系统path；
+
+### 在其它的包配置文件中使用工具包（tool package）
+
+当你依赖一个声明了`self.env_info`变量的包配置文件的时候，`self.env_info`中的环境变量将会自动应用。例如看看MinGW的包配置文件 conanfile.py (https://github.com/conan-community/conan-mingw-installer)。
+
+```python
+ class MingwInstallerConan(ConanFile):
+     name = "mingw_installer"
+     ...
+
+     build_requires = "7zip/19.00"
+
+     def build(self):
+         keychain = "%s_%s_%s_%s" % (str(self.settings.compiler.version).replace(".", ""),
+                                     self.settings.arch_build,
+                                     self.settings.compiler.exception,
+                                     self.settings.compiler.threads)
+
+         files = {
+            ...        }
+
+         tools.download(files[keychain], "file.7z")
+         self.run("7z x file.7z")
+
+     ...
+```
+
+上面的文件中声明了`build_requires`，依赖了`7zip`，用于在下载了MinGW安装器之后执行解压。因此，下载了MinGW安装器后，7z的可执行程序将会在PATH中，因为它依赖的7zip包的`package_info()`里面对此做了声明。
+
+注意：一些构建依赖有可能需要设置`os`、`compiler`或者`arch`来从源码构建它们。这些情况下，包的配置文件可能如下：
+
+```python
+    settings = "os_build", "arch_build", "arch", "compiler"
+    ...
+
+    def build(self):
+        cmake = CMake(self)
+        ...
+
+    def package_id(self):
+        self.info.include_build_settings()
+        del self.info.settings.compiler
+        del self.info.settings.arch
+```
+
+上面`package_id()`删除只为从源码构建的settings，保留了用于包分发的`os_build`和`arch_build`选项。
+
+### 在你的系统中使用工具包（tool packages）
+
+可以使用[virtualenv generator](https://docs.conan.io/en/latest/reference/generators/virtualenv.html#virtualenv-generator)来使用安装到你机器上的工具包。例如，基于windows上使用MinGW和CMake：
+
+- 在你的工程外创建一个独立的目录，用于保存和配置全局开发环境:
+
+```sh
+$ mkdir my_cpp_environ
+$ cd my_cpp_environ
+```
+
+- 创建一个conanfile.txt文件：
+
+```toml
+[requires]
+mingw_installer/1.0@conan/stable
+cmake/3.16.3
+
+[generators]
+virtualenv
+```
+
+- 安装依赖：`conan install`；
+
+- 在shell中激活虚拟环境：
+
+```sh
+$ activate
+(my_cpp_environ)$
+```
+
+- 检查工具是否在path中：
+
+```sh
+(my_cpp_environ)$ gcc --version
+
+> gcc (x86_64-posix-seh-rev1, Built by MinGW-W64 project) 4.9.2
+
+ Copyright (C) 2014 Free Software Foundation, Inc.
+ This is free software; see the source for copying conditions.  There is NO
+ warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+(my_cpp_environ)$ cmake --version
+
+> cmake version 3.16.3
+
+  CMake suite maintained and supported by Kitware (kitware.com/cmake).
+```
+
+- 可以通过去激活脚本将虚拟环境去激活：
+
+```sh
+(my_cpp_environ)$ deactivate
+```
+
+## 构建时依赖
+
+有一些包并不适合增加到包的依赖里面，例如你有一个`Zlib`包依赖于包`Cmake/3.4`，这时你需要考虑依赖CMake仅是为了构建`Zlib`？
+
+- 有一些依赖仅仅是为了从源码构建包时需要；
+- 这些大多都是一些开发工具、编译器、构建系统、代码分析、测试库等等；
+- 这些依赖往往和包的交付后使用无关，它们仅仅用于包的生成过程；
+- 对于这些工具，你并不会添加太多的版本，对这些依赖的修改也希望能尽可能简单；
+- 有一些工具链甚至不被包创建时考虑在内，例如将zlib交叉编译到Android系统，虽然在这种场景下Android工具链也是构建时依赖；
+
+为了满足上述需求，Conan实现了`build_requires`。
+
+### 声明构建时依赖
+
+构建时依赖可以通过profile文件来声明：
+
+```toml
+ [build_requires]
+ Tool1/0.1@user/channel
+ Tool2/0.1@user/channel, Tool3/0.1@user/channel
+ *: Tool4/0.1@user/channel
+ MyPkg*: Tool5/0.1@user/channel
+ &: Tool6/0.1@user/channel
+ &!: Tool7/0.1@user/channel
+```
+
+在profile中构建时依赖可以通过pattern来指定。不同的包可以指定不同的构建时依赖。上例中Tool1、Tool2、Tool3以及Tool4将会被用于所有的包（当执行`conan install`或者`conan create`时）。Tool5将会被应用于以“MyPkg”开头的包。`&`用于没有在conanfile中指明名称和版本的包，而`&!`则正好相反。
+
+不要忘了，包的消费者的conanfile可能在test_package目录下，或者通过`conan install`传入，这些也会使用上述profile中的规则。
+
+包的配置文件中的`build_requires`属性以及`build_requirements()`函数也能够用来指定构建时依赖。
+
+```python
+class MyPkg(ConanFile):
+    build_requires = "ToolA/0.2@user/testing", "ToolB/0.2@user/testing"
+
+    def build_requirements(self):
+        # useful for example for conditional build_requires
+        # This means, if we are running on a Windows machine, require ToolWin
+        if platform.system() == "Windows":
+            self.build_requires("ToolWin/0.1@user/stable")
+```
+
+
+
 
 ### Properties of build requirements
 
